@@ -65,8 +65,10 @@ class Track: UIView {
             guard let self = self else { return }
             for (index, bar) in self.bars.enumerated() {
                 let scale = values[index].map(from: min...max, to: -1...1)
+                guard !scale.isNaN else { break } 
                 let midY = self.bounds.midY
                 let scaleForScale = (max - min).map(from: 0...self.peek, to: 0...1)
+                print(scale)
                 bar.frame.origin.y = midY - midY * CGFloat(scale * Swift.min(scaleForScale, 1))
             }
         }
@@ -86,7 +88,24 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
     var session: AVAudioSession!
     var recorder: AVAudioRecorder!
     var engine = AVAudioEngine()
+    var player = AVAudioPlayerNode()
+    var state: State = .none
+    @IBInspectable var fillColor: UIColor = .lightGray
 
+    var currentNode: AVAudioNode? {
+        switch state {
+        case .isPlaying:
+            return player
+        case .isRecording:
+            return engine.inputNode
+        default:
+            return nil
+        }
+    }
+
+    enum State {
+        case none, isPlaying, isRecording
+    }
     
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -119,9 +138,21 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
         playButton.addTarget(self, action: #selector(didPressRecord), for: .valueChanged)
         self.layer.cornerRadius = 10
         self.layer.cornerCurve = .continuous
-        self.backgroundColor = .lightGray
-    }
+        self.backgroundColor = fillColor
+        let interaction = UIContextMenuInteraction(delegate: self)
+        addInteraction(interaction)
 
+    }
+    
+    func play(_ url: URL) throws {
+        let file = try AVAudioFile(forReading: url)
+
+        engine.attach(player)
+        engine.connect(player, to: engine.mainMixerNode, format: nil)
+        player.scheduleFile(file, at: nil)
+        try engine.start()
+        player.play()
+    }
     
     func setupRecorder() {
         session = AVAudioSession.sharedInstance()
@@ -160,44 +191,41 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
         return getDocumentsDirectory().appendingPathComponent("whistle.m4a")
     }
     
-    func buildWaveForm() throws {
-        let format = engine.inputNode.outputFormat(forBus: 0)
+    func buildWaveForm(tap node: AVAudioNode) throws {
+        let format = node.outputFormat(forBus: 0)
         
-        engine.inputNode.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] (buffer, time) in
+        node.installTap(onBus: 0, bufferSize: 2048, format: format) { [weak self] (buffer, time) in
             self?.track.process(buffer)
         }
-        
         engine.prepare()
-        try engine.start()
     }
     
-    func startRecording(url: URL) {
+    func record(_ url: URL) throws {
         
-        // 4
         let settings = [
             AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
             AVSampleRateKey: 12000,
             AVNumberOfChannelsKey: 1,
             AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
         ]
+        
+        recorder = try AVAudioRecorder(url: url, settings: settings)
+        recorder.record()
+        try engine.start()
 
-        do {
-            // 5
-            recorder = try AVAudioRecorder(url: url, settings: settings)
-            recorder.delegate = self
-            recorder.record()
-            try buildWaveForm()
-        } catch {
-            finishRecording(success: false)
-        }
     }
     
     func finishRecording(success: Bool) {
 
+        currentNode?.removeTap(onBus: 0)
+        state = .none
         track.resetBars()
-        recorder.stop()
+        
+        engine.stop()
+        recorder?.stop()
+        player.stop()
+        
         recorder = nil
-        engine.inputNode.removeTap(onBus: 0)
 
         if success {
           
@@ -208,18 +236,26 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
     
     @objc
     func didPressRecord() {
-        if recorder == nil {
-            startRecording(url: AudioMemo.getWhistleURL())
-        } else {
+        guard state != .none, let currentNode = currentNode else { return }
+        
+        if engine.isRunning {
+            finishRecording(success: true)
+            return
+        }
+        
+        do {
+            if state == .isPlaying {
+                try play(AudioMemo.getWhistleURL())
+            } else if state == .isRecording {
+                try record(AudioMemo.getWhistleURL())
+            }
+           
+            try buildWaveForm(tap: currentNode)
+        } catch {
             finishRecording(success: true)
         }
     }
     
-    func audioRecorderDidFinishRecording(_ recorder: AVAudioRecorder, successfully flag: Bool) {
-        if !flag {
-            finishRecording(success: false)
-        }
-    }
 }
 
 
@@ -376,6 +412,35 @@ class PlayButton: UIControl {
 }
 
 
+
+extension AudioMemo: UIContextMenuInteractionDelegate {
+    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+        return UIContextMenuConfiguration(
+            identifier: nil,
+            previewProvider: nil,
+            actionProvider: { _ in
+                let children: [UIMenuElement] = [self.recordAction, self.playAction]
+                return UIMenu(title: "", children: children)
+            })
+    }
+    
+    var recordAction: UIAction {
+        return UIAction(title: "Record") { action in
+            self.state = .isRecording
+        }
+    }
+    
+    var playAction: UIAction {
+        return UIAction(title: "Play") { action in
+            self.state = .isPlaying
+        }
+    }
+}
+
+
+
+
+
 extension FloatingPoint {
     func map(from start: ClosedRange<Self>, to end: ClosedRange<Self>) -> Self {
            let slope = (self - start.lowerBound) / (start.upperBound - start.lowerBound)
@@ -391,3 +456,4 @@ extension Array {
         }
     }
 }
+
