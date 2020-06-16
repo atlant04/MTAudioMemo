@@ -10,16 +10,16 @@ import UIKit
 import AVFoundation
 
 
-@IBDesignable
-class Track: UIView {
+//@IBDesignable
+public class Track: UIView {
     var points: [Float] = []
     var bars: [CAShapeLayer] = []
-    @IBInspectable var barStroke: UIColor = .black
-    @IBInspectable var numberOfSamples: Int = 20
-    @IBInspectable var barHeight: CGFloat = 15
-    @IBInspectable var peek: Float = 10
+    @IBInspectable public var barStroke: UIColor = .black
+    @IBInspectable public var numberOfSamples: Int = 20
+    @IBInspectable public var barHeight: CGFloat = 15
+    @IBInspectable public var peek: Float = 10
     
-    override func draw(_ rect: CGRect) {
+    public override func draw(_ rect: CGRect) {
         let spacing = bounds.width / CGFloat(numberOfSamples)
         var offset: CGFloat = spacing / 4
         let rect = CGRect(x: 0, y: 0, width: spacing / 4, height: barHeight)
@@ -65,7 +65,7 @@ class Track: UIView {
             guard let self = self else { return }
             for (index, bar) in self.bars.enumerated() {
                 let scale = values[index].map(from: min...max, to: -1...1)
-                guard !scale.isNaN else { break } 
+                guard !scale.isNaN else { break }
                 let midY = self.bounds.midY
                 let scaleForScale = (max - min).map(from: 0...self.peek, to: 0...1)
                 print(scale)
@@ -82,15 +82,210 @@ class Track: UIView {
     
 }
 
-class AudioMemo: UIView, AVAudioRecorderDelegate {
-    var playButton = PlayButton()
-    var track = Track()
+//@IBDesignable
+public class SimpleAudioMemo: UIView, AVAudioPlayerDelegate {
+    @IBInspectable public var fillColor: UIColor = .yellow {
+        didSet {
+            backgroundColor = fillColor
+        }
+    }
+    public var playButton = PlayButton()
+    public var fileURL: URL?
+    public var rounded: Bool = false {
+        didSet {
+            setNeedsLayout()
+        }
+    }
+    public var isExpanded: Bool = false
+    
+    let leftImage: UIImage = UIImage(systemName: "chevron.compact.left")!
+    let rightImage: UIImage = UIImage(systemName: "chevron.compact.right")!
+    
+    lazy var arrow: UIButton = {
+        let button = UIButton()
+        button.contentVerticalAlignment = .fill
+        button.contentHorizontalAlignment = .fill
+        button.setImage(self.rightImage, for: .normal)
+        return button
+    }()
+    
+    var reRecord: UIButton = {
+        let button = UIButton()
+        let image = UIImage(systemName: "arrow.counterclockwise")
+        button.setImage(image, for: .normal)
+        return button
+    }()
+    
+    @objc
+    func expand() {
+        UIView.animate(withDuration: 0.3) {
+            let offset: CGFloat = self.isExpanded ? -100: 100
+            self.arrow.frame.origin.x += offset
+            self.arrow.setImage(self.isExpanded ? self.rightImage : self.leftImage, for: .normal)
+            self.frame.size.width += offset
+            self.stack.frame = self.isExpanded ? .zero : CGRect(x: self.playButton.frame.maxX, y: 0, width: 100, height: self.frame.height)
+        }
+         isExpanded = !isExpanded
+    }
+    
+    var session: AVAudioSession!
+    var player: AVAudioPlayer?
+    var recorder: AVAudioRecorder?
+    var recorded: Bool = false
+    var playing: Bool = false
+    
+    override init(frame: CGRect) {
+         super.init(frame: frame)
+         commonInit()
+     }
+     
+     required init?(coder: NSCoder) {
+         super.init(coder: coder)
+         commonInit()
+     }
+    
+    lazy var stack: UIStackView = {
+        let stack = UIStackView(arrangedSubviews: [self.reRecord])
+        stack.axis = .horizontal
+        stack.distribution = .fill
+        stack.isHidden = self.isExpanded
+        return stack
+    }()
+    
+    var widthConstraint: NSLayoutConstraint?
+    
+    @objc
+    func setRecord() {
+        self.recorded = false
+    }
+    
+    func commonInit() {
+        arrow.addTarget(self, action: #selector(expand), for: .touchUpInside)
+        reRecord.addTarget(self, action: #selector(setRecord), for: .touchUpInside)
+        addSubview(playButton)
+        addSubview(arrow)
+        addSubview(stack)
+        playButton.addTarget(self, action: #selector(didPressRecord), for: .valueChanged)
+        self.layer.cornerCurve = .continuous
+        self.backgroundColor = fillColor
+        setupRecorder()
+    }
+    
+    public override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        super.hitTest(point, with: event)
+    }
+    
+    func setupRecorder() {
+        session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .default, options: .defaultToSpeaker)
+            try session.setActive(true)
+            session.requestRecordPermission() { [unowned self] allowed in
+                DispatchQueue.main.async {
+                    if allowed {
+                        self.loadRecordingUI()
+                    } else {
+                        self.loadFailUI()
+                    }
+                }
+            }
+        } catch {
+            self.loadFailUI()
+        }
+    }
+    
+    
+    func record() throws {
+        guard let url = fileURL else { return }
+        
+        let settings = [
+            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+            AVSampleRateKey: 12000,
+            AVNumberOfChannelsKey: 1,
+            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+        ]
+        
+        recorder = try AVAudioRecorder(url: url, settings: settings)
+        recorder?.record()
+    }
+    
+    func play() throws {
+        guard let url = fileURL else { return }
+        player = try AVAudioPlayer(contentsOf: url)
+        player?.delegate = self
+        player?.play()
+    }
+    
+    func loadRecordingUI() {
+        
+    }
+    
+    func loadFailUI() {
+        
+    }
+    
+    @objc func didPressRecord() {
+        if playing { finishRecording(success: true); return }
+        playing = true
+        do {
+            if !recorded {
+                try record()
+                recorded = true
+            } else {
+                try play()
+            }
+        } catch {
+            print(error)
+            finishRecording(success: false)
+        }
+    }
+    
+    public override func layoutSubviews() {
+        super.layoutSubviews()
+        
+        if !isExpanded {
+            let side = min(self.bounds.width, self.bounds.height)
+            self.playButton.frame = CGRect(x: 0, y: 0, width: side, height: side)
+            self.arrow.frame = CGRect(x: side, y: side / 2 - side / 4, width: 16, height: side / 2)
+        }
+        
+        if rounded {
+            self.layer.cornerRadius = playButton.bounds.height / 2
+        } else {
+            self.layer.cornerRadius = 10
+        }
+    }
+    
+    func finishRecording(success: Bool) {
+        recorder?.stop()
+        player?.stop()
+        
+        player = nil
+        recorder = nil
+        playing = false
+
+        if success {
+          
+        } else {
+
+        }
+    }
+    
+    public func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        playButton.handleTap()
+    }
+}
+
+
+public class AudioMemo: UIView, AVAudioRecorderDelegate {
+    public var playButton = PlayButton()
+    public var track = Track()
     var session: AVAudioSession!
     var recorder: AVAudioRecorder!
     var engine = AVAudioEngine()
     var player = AVAudioPlayerNode()
     var state: State = .none
-    @IBInspectable var fillColor: UIColor = .lightGray
+    @IBInspectable public var fillColor: UIColor = .lightGray
 
     var currentNode: AVAudioNode? {
         switch state {
@@ -180,6 +375,7 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
     func loadFailUI() {
         
     }
+
     
     class func getDocumentsDirectory() -> URL {
         let paths = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)
@@ -199,6 +395,7 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
         }
         engine.prepare()
     }
+
     
     func record(_ url: URL) throws {
         
@@ -261,22 +458,32 @@ class AudioMemo: UIView, AVAudioRecorderDelegate {
 
 
 
+
+
 //@IBDesignable
-class PlayButton: UIControl {
-    @IBInspectable var fillColor: UIColor = .systemBlue
-    @IBInspectable var isPlaying: Bool = true
-    @IBInspectable var iconFillColor: UIColor = .systemRed
-    @IBInspectable var rimWidth: CGFloat = 6
+public class PlayButton: UIControl {
+    @IBInspectable public var rimFillColor: UIColor = .systemBlue {
+        didSet {
+            setNeedsDisplay()
+        }
+    }
+    @IBInspectable public var isPlaying: Bool = true
+    @IBInspectable public var iconFillColor: UIColor = .systemRed {
+        didSet {
+            layer.fillColor = iconFillColor.cgColor
+        }
+    }
+    @IBInspectable public var rimWidth: CGFloat = 6
     
-    override class var layerClass: AnyClass {
+    public override class var layerClass: AnyClass {
         return CAShapeLayer.self
     }
     
-    override var layer: CAShapeLayer {
+    public override var layer: CAShapeLayer {
         return super.layer as! CAShapeLayer
     }
     
-    override var intrinsicContentSize: CGSize {
+    public override var intrinsicContentSize: CGSize {
         let side = min(bounds.width, bounds.height)
         return CGSize(width: side, height: side)
     }
@@ -297,20 +504,23 @@ class PlayButton: UIControl {
     func commonInit() {
         layer.fillColor = iconFillColor.cgColor
         backgroundColor = .clear
+        
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        addGestureRecognizer(tap)
     }
     
-    override func draw(_ rect: CGRect) {
+    public override func draw(_ rect: CGRect) {
         let center = CGPoint(x: rect.midX, y: rect.midY)
         let radius = min(rect.width, rect.height) / 2
         let path = UIBezierPath(arcCenter: center, radius: radius - rimWidth / 2 - 4, startAngle: 0, endAngle: 2 * .pi, clockwise: true)
         path.lineWidth = rimWidth
-        fillColor.setStroke()
+        rimFillColor.setStroke()
         path.stroke()
     }
     
-    override func layoutSubviews() {
+    public override func layoutSubviews() {
         super.layoutSubviews()
-        
+        setNeedsDisplay()
         if layer.path == nil {
             let center = CGPoint(x: bounds.midX, y: bounds.midY)
             let radius = min(bounds.width, bounds.height)
@@ -321,8 +531,8 @@ class PlayButton: UIControl {
     }
 
 
-    
-    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+    @objc
+    func handleTap() {
         let transition = CABasicAnimation(keyPath: "path")
         transition.fromValue = layer.path
         let newPath = isPlaying ? square : circle
@@ -335,7 +545,6 @@ class PlayButton: UIControl {
         sendActions(for: .valueChanged)
         self.layer.path = newPath
         layer.add(transition, forKey: "morphing")
- 
     }
     
     func circlePathWithCenter(center: CGPoint, radius: CGFloat) -> CGPath {
@@ -414,7 +623,7 @@ class PlayButton: UIControl {
 
 
 extension AudioMemo: UIContextMenuInteractionDelegate {
-    func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
+    public func contextMenuInteraction(_ interaction: UIContextMenuInteraction, configurationForMenuAtLocation location: CGPoint) -> UIContextMenuConfiguration? {
         return UIContextMenuConfiguration(
             identifier: nil,
             previewProvider: nil,
